@@ -308,11 +308,11 @@ sequenceDiagram
     participant T as Billing tool
     U->>G: POST /chat with message
     Note over G: Start HTTP span and validate JSON schema
-    G->>G: Set synthetic session; start chat-orchestrator
+    G->>G: Set synthetic session and start chat-orchestrator
     G->>V: validate_payload(message)
     V-->>G: Valid or rejected
     G->>S: POST /answer + traceparent
-    Note over S: Extract remote parent; start HTTP span
+    Note over S: Extract remote parent and start HTTP span
     S->>S: Start energy-specialist
     S->>R: fetch_chunks(message)
     R-->>S: Synthetic document
@@ -498,7 +498,7 @@ sequenceDiagram
     A->>P: Completed spans
     P->>E: Export a batch
     E->>W: POST /api/public/otel/v1/traces
-    W->>W: Authenticate project; decode and validate OTLP
+    W->>W: Authenticate project, decode and validate OTLP
     W->>O: Store raw resource-span batch
     W->>Q: Queue job referencing blob key and project
     W-->>E: Admission result
