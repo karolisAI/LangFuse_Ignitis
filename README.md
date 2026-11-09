@@ -3,15 +3,21 @@
 Self-hosted Langfuse tracing across FastAPI services and Google ADK agents.
 Includes a synthetic energy-support flow with guardrail, retrieval and billing spans.
 
+The [architecture walkthrough](ARCHITECTURE.md) explains the request flow, trace
+propagation, ingestion pipeline, dependencies and remaining integration work.
+This is a reference implementation; the actual Ignitis services are not connected.
+
 ## Setup
 
 Requires Python 3.11–3.13, [uv](https://docs.astral.sh/uv/) and Docker running.
-Run from the repository root:
+For a fresh checkout:
 
 ```powershell
+git clone https://github.com/karolisAI/LangFuse_Ignitis.git
+cd LangFuse_Ignitis
 uv sync --locked --all-extras
 uv run python scripts/setup_langfuse.py
-docker compose --project-directory infra/.runtime -f infra/.runtime/compose.yaml up -d
+docker compose --project-directory infra/.runtime -f infra/.runtime/compose.yaml up -d langfuse-web langfuse-worker
 Copy-Item .env.example .env
 ```
 
@@ -24,13 +30,13 @@ Start services in separate terminals:
 ```powershell
 # Terminal 1
 $env:OTEL_SERVICE_NAME='ignitis-specialist'
-uv run uvicorn app.specialist:app --host 127.0.0.1 --port 8001
+uv run python -m uvicorn app.specialist:app --host 127.0.0.1 --port 8001
 ```
 
 ```powershell
 # Terminal 2
 $env:OTEL_SERVICE_NAME='ignitis-gateway'
-uv run uvicorn app.gateway:app --host 127.0.0.1 --port 8000
+uv run python -m uvicorn app.gateway:app --host 127.0.0.1 --port 8000
 ```
 
 Send a request:
