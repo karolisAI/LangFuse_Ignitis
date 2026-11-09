@@ -2,6 +2,9 @@
 
 Verified against the repository and local deployment on 8 November 2026.
 
+Configuration and service setup were simplified on 9 November 2026. The request
+and ingestion paths are the same; settings now come from `app/settings.py`.
+
 Reference implementation for discussion with the Ignitis development team. The
 workflow and data are synthetic; the target production topology remains to be
 confirmed. Verification statements below describe that dated local deployment.
@@ -122,6 +125,8 @@ A session ID groups conversation turns. These identifiers serve different purpos
 | Specialist | [`app/specialist.py`](app/specialist.py) | Run retrieval and billing demonstrations and return a synthetic response |
 | Components | [`app/components.py`](app/components.py) | Named observations for validation, knowledge retrieval and billing lookup |
 | Shared tracing setup | [`app/telemetry.py`](app/telemetry.py) | Load environment settings, initialize Langfuse, instrument FastAPI, inject trace headers and shut down tracing |
+| Settings | [`app/settings.py`](app/settings.py) | Validate configuration once with Pydantic BaseSettings; load `.env` without modifying process environment variables |
+| Message models | [`app/models.py`](app/models.py) | Share request validation and the expected response shape between both services |
 | ADK example | [`examples/adk_demo.py`](examples/adk_demo.py) | Run a root agent and billing sub-agent with automatic ADK instrumentation |
 
 `Uvicorn` serves each FastAPI application. `Pydantic` validates its JSON payload.
@@ -236,13 +241,21 @@ means the existing files were preserved; it is not a running-service check.
 
 | File | Consumer | Main contents |
 | --- | --- | --- |
-| `.env` at repository root | Python applications through `load_dotenv()` | Langfuse URL, project API keys, environment, specialist URL and optional model key |
+| `.env` at repository root | `Settings`, through Pydantic BaseSettings | Langfuse URL, project API keys, environment, specialist URL and optional model key |
 | `infra/.runtime/.env` | Docker Compose | Database/object-store secrets, image tag, server settings and local headless initialization values |
 
 Compose interpolates the infrastructure `.env` into its container configuration.
 The Python application reads the root `.env` separately. Editing one file does
 not automatically update the other or change the environment of an already
 running process.
+
+`get_settings()` caches validated settings for each process. Environment variables
+take precedence over the root `.env`; optional blank values use their defaults.
+Missing project keys or malformed settings fail during startup. URLs and the
+specialist timeout are validated, and secret values are masked in the settings
+representation. The SDK receives explicit configuration instead of depending on
+`load_dotenv()` to populate its environment. Each service supplies its own default
+name; `OTEL_SERVICE_NAME` can override it.
 
 `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` identify the destination project.
 They are not the UI user's email/password and are not PostgreSQL credentials.
@@ -266,13 +279,13 @@ Langfuse documents the required variables under
 
 ### 4.4 Python process initialization
 
-Each Uvicorn process imports its application module, which imports
-`app/telemetry.py`. The setup then:
+Each Uvicorn process imports its application module, which calls the shared
+`create_app()` in `app/telemetry.py`. The setup then:
 
-1. Loads the root environment settings.
-2. Initializes the Langfuse client/resource manager for that process.
-3. Creates or reuses the global OTel tracer provider through the SDK.
-4. Adds the SDK span processing/export path.
+1. Loads and validates the process settings through `get_settings()`.
+2. Reuses the global OTel provider, or registers one with the service's name.
+3. Initializes Langfuse with explicit project keys, URL, environment and that provider.
+4. Adds the SDK span processing/export path through Langfuse.
 5. Instruments FastAPI with that same provider.
 6. Registers shutdown behavior through FastAPI's lifespan context.
 
@@ -339,8 +352,9 @@ rule is only a demonstration; it is not a production security mechanism.
 
 ### Step 4: call the specialist
 
-The gateway builds an HTTP request to `SPECIALIST_URL + /answer`, with a ten-second
-HTTPX timeout configuration. `outbound_headers()` injects the currently active
+The gateway builds an HTTP request to `SPECIALIST_URL + /answer`, with the
+`SPECIALIST_TIMEOUT_SECONDS` setting (ten seconds by default).
+`outbound_headers()` injects the currently active
 trace context. The specialist receives the text in its JSON body and the parent
 relationship in its HTTP headers.
 
@@ -370,6 +384,10 @@ belonged to that same trace.
 
 The client receives a successful answer before every telemetry batch necessarily
 becomes visible in Langfuse.
+
+Both services now use shared `ChatRequest` and `ChatResponse` models from
+`app/models.py`. The gateway also validates the specialist's response, returning
+a sanitized HTTP 502 for invalid JSON or an unexpected response shape.
 
 ### Step 7: close observations
 
@@ -601,11 +619,9 @@ are not persisted in those volumes. They belong to the Python process.
 For verification we used the installed SDK's Observations API v2 wrapper:
 
 ```python
-from dotenv import load_dotenv
-from langfuse import get_client
+from app.telemetry import setup_tracing
 
-load_dotenv()
-client = get_client()
+client = setup_tracing("trace-inspector")
 response = client.api.observations.get_many(
     trace_id="replace-with-trace-id-returned-by-chat",
     limit=100,
@@ -718,8 +734,9 @@ See [scores via API/SDK](https://langfuse.com/docs/evaluation/evaluation-methods
 | Invalid JSON or oversized message field | FastAPI/Pydantic rejects the request | HTTP response and gateway server observation |
 | Keyword guardrail rejection | HTTP 422, warning on validator, no specialist call | `input-validator` and orchestrator |
 | Specialist network error, timeout or non-success status | Gateway returns 502 and records `Specialist unavailable` | Gateway observation, specialist process and network |
-| Missing/malformed specialist JSON | Outside the handled HTTP-error block; not normalized to that 502 path | Gateway exception handling |
-| Missing/incorrect project keys | Tracing can be disabled or export authentication can fail | Python SDK logs and project settings |
+| Missing/malformed specialist JSON | Gateway validates it and returns a sanitized 502 | Gateway error observation |
+| Missing project keys | Settings validation fails during startup | Set the two project keys in `.env` or the environment |
+| Incorrect project keys | Export authentication can fail | Python SDK logs and project settings |
 | Langfuse temporarily unavailable | Export attempts can fail while application work can still succeed | Exporter logs; do not infer ingestion from HTTP 200 on `/chat` |
 | Worker stopped | Admitted work can remain queued until processing resumes | Redis queue, worker logs and raw batches |
 | Blob storage unavailable | Ingestion admission or worker batch reads can fail | MinIO connectivity, credentials and web/worker logs |
@@ -891,6 +908,8 @@ trace IDs.
 | [`app/specialist.py`](app/specialist.py) | Downstream workflow and sequential component calls |
 | [`app/components.py`](app/components.py) | Typed decorators, warning status and retriever metadata |
 | [`app/telemetry.py`](app/telemetry.py) | Provider setup, FastAPI instrumentation, context injection and shutdown |
+| [`app/settings.py`](app/settings.py) | Typed defaults, environment loading and secret handling |
+| [`app/models.py`](app/models.py) | Shared message validation |
 | [`examples/adk_demo.py`](examples/adk_demo.py) | Optional real agent execution and automatic instrumentation |
 | [`scripts/setup_langfuse.py`](scripts/setup_langfuse.py) | Upstream Compose acquisition, secrets and image selection |
 | [`pyproject.toml`](pyproject.toml) / [`uv.lock`](uv.lock) | Declared dependencies and exact resolution |

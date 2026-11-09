@@ -77,3 +77,24 @@ async def test_downstream_failure_records_error(clients, monkeypatch):
     client.flush()
     span = next(s for s in exporter.get_finished_spans() if s.name == "chat-orchestrator")
     assert span.attributes["langfuse.observation.level"] == "ERROR"
+
+
+@pytest.mark.parametrize("body,status", [
+    (b"not-json", 200),
+    (b'{"unexpected":"shape"}', 200),
+    (b'{"answer":42,"trace_id":null}', 200),
+    (b'{"error":"private backend detail"}', 503),
+])
+async def test_bad_specialist_responses_return_safe_502(clients, monkeypatch, body, status):
+    async def respond(*args, **kwargs):
+        return httpx.Response(status, content=body, request=httpx.Request("POST", "http://demo"))
+
+    monkeypatch.setattr(type(clients), "post", respond)
+    with pytest.raises(HTTPException) as exc:
+        await gateway.orchestrate("synthetic")
+    assert exc.value.status_code == 502
+    assert exc.value.detail == "Specialist unavailable"
+    client.flush()
+    spans = exporter.get_finished_spans()
+    assert any(s.attributes.get("langfuse.observation.level") == "ERROR" for s in spans)
+    assert all("private backend detail" not in str(dict(s.attributes)) for s in spans)

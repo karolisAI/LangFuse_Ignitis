@@ -1,30 +1,34 @@
 """Optional real-model example; requires a Google API key and local Langfuse keys."""
 import asyncio
-import os
 from uuid import uuid4
 
-from dotenv import load_dotenv
-from langfuse import get_client, propagate_attributes
+from langfuse import propagate_attributes
 
-load_dotenv()
+from app.settings import get_settings
+from app.telemetry import setup_tracing
 
 
 async def main():
     from google.adk.agents import Agent
+    from google.adk.models.google_llm import Gemini
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
     from openinference.instrumentation.google_adk import GoogleADKInstrumentor
     from opentelemetry import trace
 
-    if not os.getenv("GOOGLE_API_KEY"):
+    settings = get_settings()
+    if not settings.google_api_key.get_secret_value():
         raise SystemExit("Set GOOGLE_API_KEY for the optional real-model demo.")
-    client = get_client()
+    client = setup_tracing("ignitis-adk")
     if not client.auth_check():
         raise SystemExit("Check self-hosted Langfuse URL and project keys.")
     GoogleADKInstrumentor().instrument(tracer_provider=trace.get_tracer_provider())
     # Synthetic prompt only: ADK's instrumentor captures model/tool payloads.
-    model = os.getenv("ADK_MODEL", "gemini-2.5-flash")
+    model = Gemini(
+        model=settings.adk_model,
+        client_kwargs={"api_key": settings.google_api_key.get_secret_value(), "vertexai": False},
+    )
     specialist = Agent(
         name="billing_specialist", model=model,
         description="Handles demonstration energy billing questions.",
